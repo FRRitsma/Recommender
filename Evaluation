@@ -1,0 +1,102 @@
+#%%
+import json
+import os
+import numpy as np
+import random
+from LoadData import *
+from SubFunctions import *
+
+# Creating a repository of test data, and filling with ratings of
+# users not used in training.
+rootname = "BigFit"
+testsize = int(1e4)
+
+# Load data:
+with open(os.path.join(rootname+'Rank2','yIndex.json'),'r') as f:
+    yIndex = json.load(f)
+with open(os.path.join(rootname+'Rank2','xIndex.json'),'r') as f:
+    xIndex = json.load(f)
+
+rootname = rootname + "_TestData"
+# Create rootname if not existing:
+if not os.path.isdir(rootname):
+    os.makedirs(rootname)
+
+# Load TestRatings:
+if os.path.isfile(os.path.join(rootname, 'TestRatings.json')):
+    with open(os.path.join(rootname,'TestRatings.json'),'r') as f:
+        TestRatings = json.load(f)
+# If TestRatings not found, load TestUsers and create TestRatings:
+else:
+    # If not TestUsers not found, create TestUsers:
+    if not os.path.isfile(os.path.join(rootname, 'TestUsers.json')):
+        MovieRatings = GetMovieRatings(list(yIndex.keys()),Lookup)
+        TestUsers = set()
+        for v in MovieRatings.values():
+            TestUsers = TestUsers | set(v.keys())
+        TestUsers = TestUsers - set(xIndex.keys())
+        TestUsers = list(TestUsers)
+        random.shuffle(TestUsers)
+        TestUsers = TestUsers[0:testsize]
+        with open(os.path.join(rootname,'TestUsers.json'),'w') as f:
+            json.dump(TestUsers,f)
+    # If TestUsers found, load TestUsers:
+    else:
+        with open(os.path.join(rootname, 'TestUsers.json'),'r') as f:
+            TestUsers = json.load(f)
+    # Create TestRatings:
+    TestRatings = {t:None for t in TestUsers}
+    for m, Ratings in MovieRatings.items():
+        for t in TestUsers:
+            rating = Ratings.get(t,None)
+            if rating is None:
+                pass
+            elif TestRatings[t] is None:
+                TestRatings[t] = {m:int(rating)}
+            else:
+                TestRatings[t][m] = int(rating)
+    with open(os.path.join(rootname, 'TestRatings.json'),'w') as f:
+        json.dump(TestRatings, f)
+rootname = rootname[:-9]
+#%% Find optimal fit rank for input rank:
+if os.path.isfile(os.path.join(rootname + '_TestData','ErrorMat.npy')):
+    ErrorMat = np.load(os.path.join(rootname+"_TestData",'ErrorMat.npy'))
+else:
+    from Predict import *
+    import itertools
+
+    NoTests = 2000
+    rangeInputRank  = range(2,20)
+    rangeFitRank    = range(2,10)
+    ErrorMat        = np.zeros([len(rangeInputRank),len(rangeFitRank)])
+
+    # Loop over input rank, fit rank and test data:
+    for (r,input_r),(c,fit_r) in itertools.product(enumerate(rangeInputRank), enumerate(rangeFitRank)):
+        Y = np.load(os.path.join(rootname+'Rank'+str(fit_r),'FitArray.npy'))
+        with open(os.path.join(rootname+'Rank'+str(fit_r),'yIndex.json'),'r') as f:
+            yIndex = json.load(f)
+        Errors = []
+        for rating in itertools.cycle(TestRatings.values()):
+            movies = list(rating.keys())
+            if input_r < len(movies):
+                random.shuffle(movies)
+                input = {m:rating[m] for m in movies[0:input_r]}
+                _, pred = Predict(Y, yIndex, input)
+                error = []
+                for k,v in rating.items():
+                    if k not in input.keys():
+                        p = np.clip(np.rint(pred[k]),1,5)
+                        error.append(abs(p - v))            
+                Errors.append(sum(error)/len(error))
+            if len(Errors) >= NoTests:
+                break
+        ErrorMat[r,c] = sum(Errors)/len(Errors)
+    np.save(os.path.join(rootname+"_TestData",'ErrorMat.npy'),ErrorMat)
+
+# Find optimal fit rank for input rank:
+OptimalRank = [2,2]
+for i in range(0,ErrorMat.shape[0]):
+    OptimalRank.append( int(max(np.argmin(ErrorMat[i,:])+2,max(OptimalRank))) )
+
+with open(os.path.join(rootname+"_TestData",'OptimalRank.json'),'w') as f:
+    json.dump(OptimalRank,f)
